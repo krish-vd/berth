@@ -1,0 +1,9 @@
+# build output
+/bin/
+
+# local dev scripts
+/.*.sh
+
+# profiles
+*.prof
+*.pprof
