@@ -1,0 +1,273 @@
+title: Docker stack
+# berth's built-in checks. They find what to check from the running containers
+# (images, compose labels, processes), so they work on any stack unchanged.
+# A project overrides them with its own .berth/doctor.yaml.
+# Each `run` is a POSIX sh script on the Docker host: exit 0 pass · 2 warn · other fail.
+# First output line = summary, following lines = details. Never print secret values.
+
+checks:
+  # ---------------------------------------------------------------- services
+  - group: Services
+    name: No crashed services
+    run: |
+      bad=""; stopped=""; n=0
+      for c in $(docker ps -aq --filter label=com.docker.compose.project); do
+        set -- $(docker inspect -f '{{.Name}} {{.State.Status}} {{.State.ExitCode}} {{.State.OOMKilled}} {{.RestartCount}}' "$c")
+        name=${1#/}; n=$((n+1))
+        if [ "$4" = true ]; then bad="$bad\n$name: killed, out of memory"
+        elif [ "$2" = restarting ]; then bad="$bad\n$name: restart loop ($5 restarts)"
+        elif [ "$2" = dead ]; then bad="$bad\n$name: dead"
+        elif [ "$2" = exited ] && [ "$3" != 0 ]; then bad="$bad\n$name: exited with code $3"
+        elif [ "$2" = exited ]; then stopped="$stopped $name"; fi
+      done
+      [ "$n" -eq 0 ] && { echo "no compose containers on this host"; exit 2; }
+      if [ -n "$bad" ]; then printf "%s service(s) crashed%b\n" "$(printf "$bad" | grep -c .)" "$bad"; exit 1; fi
+      echo "no crashed services among $n containers${stopped:+ (stopped cleanly:$stopped)}"; exit 0
+    fix: |
+      for c in $(docker ps -aq --filter label=com.docker.compose.project --filter status=exited); do
+        code=$(docker inspect -f '{{.State.ExitCode}}' "$c")
+        [ "$code" != 0 ] && { echo "starting $(docker inspect -f '{{.Name}}' "$c")"; docker start "$c"; }
+      done
+
+  - group: Services
+    name: Processes alive inside running containers
+    run: |
+      dead=""; n=0
+      for c in $(docker ps -q); do
+        n=$((n+1)); name=$(docker inspect -f '{{.Name}}' "$c"); name=${name#/}
+        last=$(docker logs --tail 4 "$c" 2>&1 | grep -v '^[[:space:]]*$' | tail -1)
+        if echo "$last" | grep -Eq '^[A-Za-z_][A-Za-z0-9_.]*(Error|Exception)(:|$)'; then
+          dead="$dead\n$name: $(echo "$last" | cut -c1-160)"
+        fi
+      done
+      if [ -n "$dead" ]; then printf "a process died but its container still says Up%b\n" "$dead"; exit 1; fi
+      echo "none of $n running containers ends its log in an unhandled exception"; exit 0
+    fix: |
+      for c in $(docker ps -q); do
+        last=$(docker logs --tail 4 "$c" 2>&1 | grep -v '^[[:space:]]*$' | tail -1)
+        echo "$last" | grep -Eq '^[A-Za-z_][A-Za-z0-9_.]*(Error|Exception)(:|$)' && { echo "restarting $(docker inspect -f '{{.Name}}' "$c")"; docker restart "$c"; }
+      done
+
+  - group: Services
+    name: Health checks passing
+    run: |
+      bad=""; n=0
+      for c in $(docker ps -q); do
+        h=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$c"); [ -z "$h" ] && continue
+        n=$((n+1)); name=$(docker inspect -f '{{.Name}}' "$c"); name=${name#/}
+        [ "$h" = unhealthy ] && bad="$bad\n$name: $(docker inspect -f '{{range .State.Health.Log}}{{.Output}}{{end}}' "$c" | tail -1 | cut -c1-160)"
+      done
+      [ "$n" -eq 0 ] && { echo "no containers define a health check"; exit 0; }
+      if [ -n "$bad" ]; then printf "unhealthy containers%b\n" "$bad"; exit 1; fi
+      echo "all $n health-checked containers are healthy"; exit 0
+
+  - group: Services
+    name: Not blocked waiting for a debugger
+    run: |
+      out=""; blocked=""; seen=0
+      for c in $(docker ps -q); do
+        cmd=$(docker inspect -f '{{json .Config.Entrypoint}} {{json .Config.Cmd}}' "$c")
+        echo "$cmd" | grep -q -- '--wait-for-client' || continue
+        seen=1; name=$(docker inspect -f '{{.Name}}' "$c"); name=${name#/}
+        dbg=$(echo "$cmd" | grep -oE -- '--listen[ ",]+[^ ",]+' | head -1 | sed 's/.*[:" ]//')
+        for p in $(docker port "$c" | sed -n 's/.*:\([0-9][0-9]*\)$/\1/p' | sort -u); do
+          [ "$p" = "$dbg" ] && continue
+          code=$(curl -s -o /dev/null -m 3 -w '%{http_code}' "http://localhost:$p/" 2>/dev/null)
+          if [ "$code" = 000 ]; then blocked="$blocked $name"; out="$out\n$name: no answer on :$p, attach a debugger to :$dbg"
+          else out="$out\n$name: answering on :$p (HTTP $code)"; fi
+        done
+      done
+      [ "$seen" = 0 ] && { echo "no services wait for a debugger"; exit 0; }
+      if [ -n "$blocked" ]; then printf "waiting for a debugger:%s%b\n" "$blocked" "$out"; exit 2; fi
+      printf "every debugpy service is answering%b\n" "$out"; exit 0
+    fixHint: These services start under `debugpy --wait-for-client` and serve nothing until a debugger attaches to the port shown.
+
+  # ---------------------------------------------------------------- config
+  - group: Config
+    name: Shared settings agree across services
+    run: |
+      tmp=$(mktemp)
+      for c in $(docker ps -q --filter label=com.docker.compose.project); do
+        name=$(docker inspect -f '{{.Name}}' "$c"); name=${name#/}
+        proj=$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$c")
+        docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$c" \
+          | grep -E '^([A-Z0-9_]*JWT[A-Z0-9_]*|APP_ENV|ENV|ENVIRONMENT|NODE_ENV|DJANGO_ENV)=' | while IFS= read -r kv; do
+            k=${kv%%=*}; v=${kv#*=}
+            case "$k" in *JWT*) shown="#$(printf %s "$v" | sha256sum | cut -c1-8)" ;; *) shown="$v" ;; esac
+            printf '%s\t%s\t%s\t%s\n' "$proj" "$k" "$shown" "$name" >> "$tmp"
+          done
+      done
+      diff=$(awk -F'\t' '{k=$1" "$2; if(!(k in v)) v[k]=$3; else if(v[k]!=$3) bad[k]=1; seen[k]=seen[k]"  "$4"="$3}
+                         END{for(k in bad) print k":"seen[k]}' "$tmp")
+      shared=$(awk -F'\t' '{c[$1" "$2]++} END{n=0; for(k in c) if(c[k]>1) n++; print n}' "$tmp"); rm -f "$tmp"
+      if [ -n "$diff" ]; then echo "services in one project disagree (secrets shown as fingerprints)"; echo "$diff"; exit 1; fi
+      echo "$shared shared setting(s) agree across services (JWT values compared by fingerprint, never shown)"; exit 0
+    fixHint: Give every service the same value in its env file, then recreate the containers (C → Up).
+
+  # ---------------------------------------------------------------- data
+  - group: Data
+    name: Postgres accepting connections
+    run: |
+      n=0; bad=""
+      for c in $(docker ps -q); do
+        docker inspect -f '{{.Config.Image}}' "$c" | grep -Eqi 'postgres|pgvector|postgis|timescale' || continue
+        n=$((n+1)); name=$(docker inspect -f '{{.Name}}' "$c"); name=${name#/}
+        u=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$c" | sed -n 's/^POSTGRES_USER=//p')
+        docker exec "$c" pg_isready -U "${u:-postgres}" >/dev/null 2>&1 || bad="$bad $name"
+      done
+      [ "$n" -eq 0 ] && { echo "no Postgres containers running"; exit 0; }
+      [ -n "$bad" ] && { echo "not accepting connections:$bad"; exit 1; }
+      echo "$n Postgres container(s) accepting connections"; exit 0
+
+  - group: Data
+    name: No stranded replication slots
+    run: |
+      out=""; idle=0; total=0
+      for c in $(docker ps -q); do
+        docker inspect -f '{{.Config.Image}}' "$c" | grep -Eqi 'postgres|pgvector|postgis|timescale' || continue
+        name=$(docker inspect -f '{{.Name}}' "$c"); name=${name#/}
+        u=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$c" | sed -n 's/^POSTGRES_USER=//p')
+        rows=$(docker exec "$c" psql -U "${u:-postgres}" -d postgres -Atc "select slot_name||'  active='||active||'  holds '||coalesce(pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(),restart_lsn)),'?') from pg_replication_slots order by 1" 2>/dev/null) || continue
+        [ -z "$rows" ] && continue
+        total=$((total + $(echo "$rows" | grep -c .))); idle=$((idle + $(echo "$rows" | grep -c 'active=f')))
+        out="$out\n$name:\n$rows"
+      done
+      [ "$total" -eq 0 ] && { echo "no replication slots"; exit 0; }
+      if [ "$idle" -eq 0 ]; then printf "%s slot(s), all streaming%b\n" "$total" "$out"; exit 0; fi
+      printf "%s of %s slots are idle: they hold WAL and grow the disk until read or dropped%b\n" "$idle" "$total" "$out"; exit 2
+    fixHint: Restart whatever consumes the slots (e.g. a CDC / sync service). Drop slots that belong to nothing any more with select pg_drop_replication_slot('name').
+
+  - group: Data
+    name: Redis responding
+    run: |
+      n=0; bad=""
+      for c in $(docker ps -q); do
+        docker inspect -f '{{.Config.Image}}' "$c" | grep -Eqi 'redis|valkey|keydb' || continue
+        n=$((n+1)); name=$(docker inspect -f '{{.Name}}' "$c"); name=${name#/}
+        [ "$(docker exec "$c" redis-cli ping 2>/dev/null)" = PONG ] || bad="$bad $name"
+      done
+      [ "$n" -eq 0 ] && { echo "no Redis containers running"; exit 0; }
+      [ -n "$bad" ] && { echo "no PONG from:$bad"; exit 1; }
+      echo "$n Redis container(s) answered PONG"; exit 0
+
+  - group: Data
+    name: Elasticsearch cluster health
+    run: |
+      n=0; out=""; worst=0
+      for c in $(docker ps -q); do
+        docker inspect -f '{{.Config.Image}}' "$c" | grep -Eqi 'elasticsearch|opensearch' || continue
+        n=$((n+1)); name=$(docker inspect -f '{{.Name}}' "$c"); name=${name#/}
+        st=$(docker exec "$c" curl -s -m 5 localhost:9200/_cluster/health 2>/dev/null | sed -n 's/.*"status":"\([a-z]*\)".*/\1/p')
+        case "$st" in
+          green)  out="$out\n$name: green" ;;
+          yellow) out="$out\n$name: yellow (normal on one node: replicas have nowhere to go)" ;;
+          red)    out="$out\n$name: RED, primary shards missing"; worst=1 ;;
+          *)      out="$out\n$name: no answer on :9200"; worst=1 ;;
+        esac
+      done
+      [ "$n" -eq 0 ] && { echo "no Elasticsearch containers running"; exit 0; }
+      if [ "$worst" -ne 0 ]; then printf "a search cluster is unhealthy%b\n" "$out"; exit 1; fi
+      printf "%s search cluster(s) serving%b\n" "$n" "$out"; exit 0
+
+  - group: Data
+    name: Disk space
+    run: |
+      use=$(df -P / | awk 'NR==2{gsub("%","",$5); print $5}'); free=$(df -Ph / | awk 'NR==2{print $4}')
+      if [ "$use" -ge 95 ]; then echo "disk ${use}% full, only $free free"; exit 1; fi
+      if [ "$use" -ge 85 ]; then echo "disk ${use}% full, $free free"; exit 2; fi
+      echo "disk ${use}% used, $free free"; exit 0
+    fixHint: Prune unused images (2 → P) and volumes (3 → P).
+
+  # ---------------------------------------------------------------- migrations
+  - group: Migrations
+    name: Django migrations applied (every database)
+    timeout: 300
+    run: |
+      out=""; pend=0; n=0
+      for c in $(docker ps -q); do
+        docker exec "$c" sh -c 'test -f manage.py && find . -path "*/migrations/0*.py" -not -path "*/site-packages/*" | head -1 | grep -q .' 2>/dev/null || continue
+        n=$((n+1)); name=$(docker inspect -f '{{.Name}}' "$c"); name=${name#/}
+        dbs=$(docker exec "$c" python manage.py shell -c "from django.conf import settings; print(' '.join(settings.DATABASES))" 2>/dev/null | tail -1)
+        # with several databases an app is only migrated on the one its router allows,
+        # so a migration is missing only when no database has applied it
+        all=""
+        for db in ${dbs:-default}; do
+          all="$all
+      $(docker exec "$c" python manage.py showmigrations --database="$db" 2>/dev/null | awk -v db="$db" '/^[^ ]/{app=$1} /\[[X ]\]/{print db, ($0 ~ /\[X\]/ ? "X" : "-"), app, $NF}')"
+        done
+        p=$(echo "$all" | awk 'NF==4{k=$3": "$4; seen[k]=1; if($2=="X") ok[k]=1} END{for(k in seen) if(!(k in ok)) print "  "k}' | sort)
+        [ -z "$p" ] && continue
+        k=$(echo "$p" | grep -c .); pend=$((pend+k)); out="$out\n$name: $k unapplied\n$p"
+      done
+      [ "$n" -eq 0 ] && { echo "no Django services with migrations"; exit 0; }
+      if [ "$pend" -gt 0 ]; then printf "%s unapplied migration(s)%b\n" "$pend" "$out"; exit 1; fi
+      echo "every migration applied in $n Django service(s)"; exit 0
+    fix: |
+      for c in $(docker ps -q); do
+        docker exec "$c" sh -c 'test -f manage.py && find . -path "*/migrations/0*.py" -not -path "*/site-packages/*" | head -1 | grep -q .' 2>/dev/null || continue
+        dbs=$(docker exec "$c" python manage.py shell -c "from django.conf import settings; print(' '.join(settings.DATABASES))" 2>/dev/null | tail -1)
+        for db in ${dbs:-default}; do
+          echo "migrating $(docker inspect -f '{{.Name}}' "$c") → $db"; docker exec "$c" python manage.py migrate --database="$db" || exit 1
+        done
+      done
+
+  - group: Migrations
+    name: Every model change has a migration
+    timeout: 300
+    run: |
+      out=""; miss=0; n=0
+      for c in $(docker ps -q); do
+        docker exec "$c" sh -c 'test -f manage.py && find . -path "*/migrations/0*.py" -not -path "*/site-packages/*" | head -1 | grep -q .' 2>/dev/null || continue
+        n=$((n+1)); name=$(docker inspect -f '{{.Name}}' "$c"); name=${name#/}
+        r=$(docker exec "$c" python manage.py makemigrations --check --dry-run --noinput 2>&1)
+        [ $? -eq 0 ] && continue
+        apps=$(echo "$r" | sed -n "s/^Migrations for '\(.*\)':.*/\1/p" | tr '\n' ' ')
+        miss=1; out="$out\n$name: ${apps:-$(echo "$r" | tail -1)}"
+      done
+      [ "$n" -eq 0 ] && { echo "no Django services with migrations"; exit 0; }
+      if [ "$miss" -ne 0 ]; then printf "model changes with no migration%b\n" "$out"; exit 2; fi
+      echo "no missing migrations in $n Django service(s)"; exit 0
+    fixHint: Run makemigrations for the apps listed, in the service that owns the schema, and commit the files.
+
+  # ---------------------------------------------------------------- workers
+  - group: Workers
+    name: Celery worker and beat running
+    run: |
+      n=0; out=""; warn=0
+      for c in $(docker ps -q); do
+        ps=$(docker top "$c" -eo pid,args 2>/dev/null | grep -v " sh -c ") || continue
+        echo "$ps" | grep -q '[c]elery' || continue
+        n=$((n+1)); name=$(docker inspect -f '{{.Name}}' "$c"); name=${name#/}
+        w=$(echo "$ps" | grep -c 'celery.*worker'); b=$(echo "$ps" | grep -c 'celery.*beat')
+        cmd=$(docker inspect -f '{{json .Config.Entrypoint}} {{json .Config.Cmd}}' "$c")
+        if [ "$w" -eq 0 ] && ! echo "$cmd" | grep -q beat; then out="$out\n$name: no worker process"; warn=1
+        elif echo "$cmd" | grep -q beat && [ "$b" -eq 0 ]; then out="$out\n$name: beat expected but not running, scheduled tasks won't fire"; warn=1
+        else out="$out\n$name: $w worker process(es)$( [ "$b" -gt 0 ] && echo ', beat running')"; fi
+      done
+      [ "$n" -eq 0 ] && { echo "no Celery services running"; exit 0; }
+      if [ "$warn" -ne 0 ]; then printf "a Celery service is incomplete%b\n" "$out"; exit 2; fi
+      printf "Celery healthy in %s container(s)%b\n" "$n" "$out"; exit 0
+
+  - group: Workers
+    name: Workers run the code on disk
+    timeout: 90
+    run: |
+      out=""; stale=0; n=0
+      for c in $(docker ps -q); do
+        docker top "$c" -eo pid,args 2>/dev/null | grep -v " sh -c " | grep -q 'celery.*worker' || continue
+        n=$((n+1)); name=$(docker inspect -f '{{.Name}}' "$c"); name=${name#/}
+        st=$(docker inspect -f '{{.State.StartedAt}}' "$c")
+        for src in $(docker inspect -f '{{range .Mounts}}{{if eq .Type "bind"}}{{println .Source}}{{end}}{{end}}' "$c"); do
+          [ -d "$src" ] || continue
+          k=$(find "$src" -name '*.py' -newermt "$st" -not -path '*/.venv*' -not -path '*/venv/*' -not -path '*/node_modules/*' -not -path '*/__pycache__/*' 2>/dev/null | grep -c .)
+          [ "$k" -gt 0 ] && { stale=1; out="$out\n$name: $k file(s) changed since it started (Celery doesn't reload)"; }
+        done
+      done
+      [ "$n" -eq 0 ] && { echo "no Celery workers running"; exit 0; }
+      if [ "$stale" -ne 0 ]; then printf "a worker is running older code than your files%b\n" "$out"; exit 2; fi
+      echo "every worker started after its last code change"; exit 0
+    fix: |
+      for c in $(docker ps -q); do
+        docker top "$c" -eo pid,args 2>/dev/null | grep -v " sh -c " | grep -q 'celery.*worker' || continue
+        echo "restarting $(docker inspect -f '{{.Name}}' "$c")"; docker restart "$c"
+      done

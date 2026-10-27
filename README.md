@@ -86,6 +86,30 @@ Press `?` inside berth for the full list.
 
 Custom commands live in `~/.config/berth/config.yaml` (`%AppData%\berth\config.yaml` on Windows) and are re-read each time you open the menu.
 
-## Doctor checks
+## Doctor
 
-Put a `.berth/doctor.yaml` in your project. Each check is a shell script: exit `0` = pass, `2` = warning, anything else = fail; the first line of output is shown as the summary. A check can define a `fix` that berth runs after you confirm.
+Press `6` (or run `berth doctor`) for a health check of the whole stack. Built-in checks work on any Docker host with nothing to configure — they find what to check from the running containers:
+
+- **Services** — crashed or OOM-killed containers, restart loops, failing health checks, a process that died while its container still says *Up*, services stuck waiting for a debugger (`debugpy --wait-for-client`).
+- **Config** — settings that must match across a compose project's services (`*JWT*`, `APP_ENV`, `ENVIRONMENT` …); secrets are compared by fingerprint, never shown.
+- **Data** — Postgres accepting connections, idle replication slots holding WAL, Redis answering, Elasticsearch cluster health, disk space.
+- **Migrations** — Django migrations not applied on any configured database, and model changes with no migration.
+- **Workers** — Celery worker and beat running, and workers still running code older than the files on disk.
+
+Checks with a fix offer it on `f`, after you confirm.
+
+### Your own checks
+
+A project can replace the built-in set with a `.berth/doctor.yaml` (found in the folder you run berth from, or any parent; or pass `--doctor`). Each check is a shell script run on the Docker host: exit `0` = pass, `2` = warning, anything else = fail; the first line of output is the summary.
+
+```yaml
+title: My stack
+checks:
+  - group: Data
+    name: Queue not backed up
+    run: |
+      n=$(docker exec redis redis-cli llen jobs)
+      [ "$n" -lt 100 ] && { echo "$n jobs waiting"; exit 0; }
+      echo "$n jobs waiting"; exit 2
+    fixHint: Scale the workers up.
+```

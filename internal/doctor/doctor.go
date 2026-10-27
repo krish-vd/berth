@@ -4,6 +4,7 @@ package doctor
 
 import (
 	"context"
+	_ "embed"
 	"errors"
 	"os"
 	"path/filepath"
@@ -51,8 +52,14 @@ type Result struct {
 	At       time.Time
 }
 
+// BuiltIn names berth's own generic checks, used when no project file exists.
+const BuiltIn = "built-in checks"
+
+//go:embed default.yaml
+var builtIn []byte
+
 // Find locates doctor.yaml: explicit path, $BERTH_DOCTOR, .berth/doctor.yaml
-// in the working directory or any parent, then the user config dir.
+// in the working directory or any parent, then the user config dir, then BuiltIn.
 func Find(explicit string) string {
 	for _, p := range []string{explicit, os.Getenv("BERTH_DOCTOR")} {
 		if p != "" {
@@ -76,16 +83,19 @@ func Find(explicit string) string {
 			return p
 		}
 	}
-	return ""
+	return BuiltIn
 }
 
 func Load(path string) (*File, error) {
 	if path == "" {
 		return nil, errors.New("no doctor.yaml found")
 	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
+	b := builtIn
+	if path != BuiltIn {
+		var err error
+		if b, err = os.ReadFile(path); err != nil {
+			return nil, err
+		}
 	}
 	var f File
 	if err := yaml.Unmarshal(b, &f); err != nil {
