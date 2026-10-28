@@ -39,6 +39,12 @@ func (m Model) View() string {
 	lw := m.listWidth()
 	var body string
 	switch m.view {
+	case VHosts:
+		if lw > 0 {
+			body = lipgloss.JoinHorizontal(lipgloss.Top, m.viewHostList(lw, bh), m.viewHostDetail(m.w-lw, bh))
+		} else {
+			body = m.viewHostDetail(m.w, bh)
+		}
 	case VDoctor:
 		if lw > 0 {
 			body = lipgloss.JoinHorizontal(lipgloss.Top, m.viewDoctorList(lw, bh), m.viewDoctorDetail(m.w-lw, bh))
@@ -71,6 +77,8 @@ func (m Model) View() string {
 	switch {
 	case m.confirm != nil:
 		out = overlay(out, m.viewConfirm(), m.w, m.h)
+	case m.hosts.form != nil:
+		out = overlay(out, m.viewHostForm(), m.w, m.h)
 	case m.palette != nil:
 		out = overlay(out, m.viewPalette(), m.w, m.h)
 	case m.alertsOpen:
@@ -245,7 +253,11 @@ func (m Model) viewHeader() string {
 		counts += "   " + fg(Pulse(cRed, m.frame)).Render("●") + " " + sBold.Render(fmt.Sprint(unh)) + " " + sMuted.Render("unhealthy")
 	}
 	counts += "   " + fg(cMuted).Render("○") + " " + sBold.Render(fmt.Sprint(stopped)) + " " + sMuted.Render("stopped")
-	l1 := " " + sText.Render(m.cli.Host) + sep + sMuted.Render("engine ") + sText.Render(info.ServerVersion) +
+	where := sText.Render(m.cli.Host)
+	if HostLabel != "" {
+		where = fg(cAccent2).Bold(true).Render(HostLabel) + " " + sMuted.Render(m.cli.Host)
+	}
+	l1 := " " + where + sep + sMuted.Render("engine ") + sText.Render(info.ServerVersion) +
 		sep + sText.Render(fmt.Sprint(info.NCPU)) + sMuted.Render(" cpu ") + sText.Render(HumanBytes(float64(info.MemTotal))) +
 		sep + counts
 	right := sMuted.Render(time.Now().Format("15:04:05")) + " "
@@ -270,7 +282,7 @@ func (m Model) viewHeader() string {
 	logo := fg(cAccent).Bold(true).Render("◆ berth")
 	tabs := ""
 	for i, n := range viewNames {
-		k := fmt.Sprintf("%d", i+1)
+		k := viewKey(View(i))
 		if View(i) == m.view {
 			tabs += " " + withBg(fg(cAccent2).Bold(true).Render(k)+" "+sBold.Render(n), cSelBg, len(n)+2) + " "
 		} else {
@@ -296,6 +308,8 @@ func (m Model) viewFooter() string {
 		hints = []string{k("↑↓", "scroll"), k("[ ]", "tabs"), k("t", "window"), k("v", "reveal env"), k("esc", "back"), k("x", "menu")}
 	case m.view == VContainers:
 		hints = []string{k("x", "menu"), k("enter", "focus"), k("[ ]", "tabs"), k("s", "stop/start"), k("r", "restart"), k("E", "shell"), k("m", "logs"), k("d", "remove"), k("/", "filter"), k("C", "compose"), k("c", "custom"), k("b", "bulk"), k("?", "help")}
+	case m.view == VHosts:
+		hints = []string{k("↑↓", "select"), k("enter", "switch to it"), k("a", "add"), k("e", "edit"), k("d", "remove"), k("r", "probe again"), k("1-6", "views"), k("?", "help")}
 	case m.view == VDoctor:
 		hints = []string{k("↑↓", "select"), k("r", "re-run checks"), k("f", "apply fix"), k("enter", "details"), k("1-6", "views"), k("?", "help")}
 	case m.view == VEvents:

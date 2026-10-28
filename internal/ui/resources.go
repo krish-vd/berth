@@ -61,6 +61,8 @@ func volSize(v docker.Volume) int64 {
 
 func (m Model) resCount() int {
 	switch m.view {
+	case VHosts:
+		return len(m.hosts.list)
 	case VDoctor:
 		if m.doc.file != nil {
 			return len(m.doc.file.Checks)

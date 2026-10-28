@@ -13,6 +13,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/krish-vd/berth/internal/docker"
+	"github.com/krish-vd/berth/internal/hosts"
 	"github.com/krish-vd/berth/internal/metrics"
 	"github.com/krish-vd/berth/internal/ui"
 )
@@ -53,22 +54,51 @@ func main() {
 		}
 	}
 
-	cli, err := docker.New(*host)
+	endpoint := docker.Resolve(*host)
+	if *snapshot != "" {
+		cli, err := docker.New(endpoint)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "berth:", err)
+			os.Exit(1)
+		}
+		ui.CurrentHost = endpoint
+		var w, h int
+		fmt.Sscanf(*snapshot, "%dx%d", &w, &h)
+		fmt.Println(headless(context.Background(), cli, metrics.NewSampler(cli, *interval), w, h, *keys))
+		return
+	}
+	// one session per environment: picking another host in the Hosts view (0)
+	// ends this session and starts a fresh one there
+	for {
+		next, err := session(endpoint, *interval)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "berth:", err)
+			os.Exit(1)
+		}
+		if next == "" {
+			return
+		}
+		endpoint = next
+		ui.StartInDoctor = false
+	}
+}
+
+// session runs berth against one Docker endpoint until the user quits
+// (returns "") or switches environment (returns the new endpoint).
+func session(endpoint string, interval time.Duration) (string, error) {
+	cli, err := docker.New(endpoint)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "berth:", err)
-		os.Exit(1)
+		return "", err
+	}
+	ui.CurrentHost, ui.SwitchTo, ui.HostLabel = endpoint, "", ""
+	if hs := hosts.Discover(endpoint); len(hs) > 0 && hs[0].Name != "This machine" {
+		ui.HostLabel = hs[0].Name
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	smp := metrics.NewSampler(cli, *interval)
-	if *snapshot != "" {
-		var w, h int
-		fmt.Sscanf(*snapshot, "%dx%d", &w, &h)
-		fmt.Println(headless(ctx, cli, smp, w, h, *keys))
-		return
-	}
+	smp := metrics.NewSampler(cli, interval)
 	p := tea.NewProgram(ui.New(cli, smp), tea.WithAltScreen(), tea.WithMouseAllMotion(), tea.WithFPS(20))
 	go smp.Run(ctx, func(s metrics.Snapshot) { p.Send(ui.SnapMsg(s)) })
 	go func() { // engine events, reconnecting with backoff
@@ -92,7 +122,7 @@ func main() {
 	}()
 
 	if _, err := p.Run(); err != nil {
-		fmt.Fprintln(os.Stderr, "berth:", err)
-		os.Exit(1)
+		return "", err
 	}
+	return ui.SwitchTo, nil
 }

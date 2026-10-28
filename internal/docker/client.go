@@ -34,9 +34,9 @@ type Client struct {
 	Parallel int
 }
 
-// New resolves host (flag value, may be empty) and returns a client.
+// Resolve turns a host flag (may be empty) into an endpoint URL.
 // Resolution order: explicit host > $DOCKER_HOST > platform default.
-func New(host string) (*Client, error) {
+func Resolve(host string) string {
 	if host == "" {
 		host = os.Getenv("DOCKER_HOST")
 	}
@@ -47,6 +47,15 @@ func New(host string) (*Client, error) {
 			host = "unix:///var/run/docker.sock"
 		}
 	}
+	return host
+}
+
+// HideWindow stops helper processes flashing a console window on Windows.
+func HideWindow(cmd *exec.Cmd) { hideWindow(cmd) }
+
+// New resolves host (flag value, may be empty) and returns a client.
+func New(host string) (*Client, error) {
+	host = Resolve(host)
 	u, err := url.Parse(host)
 	if err != nil {
 		return nil, fmt.Errorf("invalid docker host %q: %w", host, err)
@@ -75,7 +84,9 @@ func New(host string) (*Client, error) {
 		}
 		c.execv = []string{"ssh", target, "docker"}
 		c.shellv = []string{"ssh", "-t", target}
-		dial = cmdDialer("ssh", "-o", "ConnectTimeout=10", "--", target, "docker", "system", "dial-stdio")
+		// BatchMode: a password or host-key prompt would freeze the TUI, so fail fast instead
+		dial = cmdDialer("ssh", "-o", "ConnectTimeout=10", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
+			"--", target, "docker", "system", "dial-stdio")
 	case "wsl":
 		args := []string{}
 		if d := strings.Trim(u.Host+u.Path, "/"); d != "" {

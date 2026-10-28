@@ -26,9 +26,18 @@ const (
 	VNetworks
 	VEvents
 	VDoctor
+	VHosts
 )
 
-var viewNames = []string{"Containers", "Images", "Volumes", "Networks", "Events", "Doctor"}
+var viewNames = []string{"Containers", "Images", "Volumes", "Networks", "Events", "Doctor", "Hosts"}
+
+// viewKey is the key that opens a view: 1-6, and 0 for Hosts.
+func viewKey(v View) string {
+	if v == VHosts {
+		return "0"
+	}
+	return fmt.Sprint(int(v) + 1)
+}
 
 type Tab int
 
@@ -130,8 +139,8 @@ type Model struct {
 	offset  int
 	selID   string
 	lastSel string
-	rcur    [6]int
-	roff    [6]int
+	rcur    [7]int
+	roff    [7]int
 
 	w, h   int
 	frame  int
@@ -186,7 +195,8 @@ type Model struct {
 
 	hoverX, hoverY int // last pointer cell, for chart readouts
 
-	doc docState // project health checks (Doctor view)
+	doc   docState  // project health checks (Doctor view)
+	hosts hostState // Docker environments (Hosts view)
 
 	ticking bool         // a frame tick is scheduled
 	cache   *renderCache // shared across value copies; written during View
@@ -330,6 +340,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case rerunDoctorMsg:
 		cmd = m.startDoctor()
 
+	case hostListMsg:
+		cmd = m.onHostList(msg)
+
+	case hostProbeMsg:
+		m.onHostProbe(msg)
+
 	case logBatchMsg:
 		if c := m.logs.receive(msg); c != nil {
 			cmd = c
@@ -375,7 +391,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *Model) frameDelay() time.Duration {
 	fast := time.Second / fps
 	if !m.gotSnap || len(m.pending) > 0 || (m.tab == TLogs && m.logs.id == "" && m.view == VContainers) ||
-		(m.view == VVolumes && m.dfBusy) || (m.view == VDoctor && m.doc.running) || !m.hostCPU.Settled() || !m.hostMem.Settled() {
+		(m.view == VVolumes && m.dfBusy) || (m.view == VDoctor && m.doc.running) || (m.view == VHosts && m.hosts.pending > 0) || !m.hostCPU.Settled() || !m.hostMem.Settled() {
 		return fast
 	}
 	if a := m.anims[m.selID]; a != nil && (!a.cpu.Settled() || !a.mem.Settled()) {
@@ -437,6 +453,9 @@ func (m *Model) sync() tea.Cmd {
 	if m.view == VDoctor && !m.doc.tried {
 		cmds = append(cmds, m.startDoctor())
 	}
+	if m.view == VHosts && !m.hosts.tried {
+		cmds = append(cmds, m.startHosts())
+	}
 	if kind, id := m.rawKey(); kind != "" && m.rawWant != kind+":"+id {
 		m.rawWant = kind + ":" + id
 		cmds = append(cmds, m.fetchRaw(kind, id))
@@ -460,6 +479,9 @@ func (m *Model) periodic() tea.Cmd {
 	}
 	if now.Sub(m.resAt) > 15*time.Second {
 		cmds = append(cmds, m.fetchResources())
+	}
+	if m.view == VHosts && m.hosts.tried && m.hosts.pending == 0 && len(m.hosts.list) > 0 && now.Sub(m.hosts.at) > 15*time.Second {
+		cmds = append(cmds, m.probeAll())
 	}
 	return tea.Batch(cmds...)
 }
@@ -502,6 +524,15 @@ func (m *Model) mouse(msg tea.MouseMsg) {
 				m.cursor = i
 				m.selID = m.rows[i].c.ID
 			}
+		} else if m.view == VHosts {
+			vis, off := m.bodyHeight()-2, 0
+			if r := m.rcur[VHosts]*2 + 1; r >= vis {
+				off = r - vis + 1
+			}
+			if r := (off + i) / 2; i >= 0 && r < len(m.hosts.list) {
+				m.rcur[VHosts] = r
+				m.dScroll = 0
+			}
 		} else if m.view == VDoctor {
 			rows, off := m.doctorLayout(m.bodyHeight())
 			if r := off + i; i >= 0 && r < len(rows) && rows[r] >= 0 {
@@ -532,6 +563,9 @@ func (m Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.confirm = nil
 		}
 		return m, nil
+	}
+	if m.hosts.form != nil {
+		return m, m.hostFormKey(k)
 	}
 	if m.palette != nil {
 		return m.paletteKey(k)
@@ -609,6 +643,12 @@ func (m Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.openPalette(title, m.composeItems())
 		}
 		return m, nil
+	case "0":
+		m.setView(VHosts)
+		if !m.hosts.tried {
+			return m, m.startHosts()
+		}
+		return m, nil
 	case "1", "2", "3", "4", "5", "6":
 		m.setView(View(ks[0] - '1'))
 		if m.view == VDoctor && m.doc.file == nil && !m.doc.running {
@@ -619,6 +659,9 @@ func (m Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.focus = 1 - m.focus
 		return m, nil
 	case "enter":
+		if m.view == VHosts {
+			return m, m.hostKey("enter")
+		}
 		m.focus = 1
 		return m, nil
 	case "esc":
@@ -705,6 +748,8 @@ func (m Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.resourceKey(ks)
 	case VDoctor:
 		return m, m.doctorKey(ks)
+	case VHosts:
+		return m, m.hostKey(ks)
 	case VEvents:
 		if ks == "c" {
 			m.events = nil

@@ -425,7 +425,7 @@ var helpSections = []struct {
 	title string
 	keys  [][2]string
 }{
-	{"Global", [][2]string{{"1-5", "containers · images · volumes · networks · events"}, {"x", "context menu"}, {"ctrl+p  :", "command palette"}, {"b", "bulk commands"}, {"C", "compose: up · down · pull · build · logs"}, {"c", "custom commands (config file)"}, {"!", "alerts (click the ▲ badge too)"}, {"tab / enter", "focus detail pane"}, {"esc", "back / clear"}, {"+  _", "screen mode"}, {"?", "this help"}, {"q", "quit"}}},
+	{"Global", [][2]string{{"1-6", "containers · images · volumes · networks · events · doctor"}, {"0", "hosts: every Docker environment, switch between them"}, {"x", "context menu"}, {"ctrl+p  :", "command palette"}, {"b", "bulk commands"}, {"C", "compose: up · down · pull · build · logs"}, {"c", "custom commands (config file)"}, {"!", "alerts (click the ▲ badge too)"}, {"tab / enter", "focus detail pane"}, {"esc", "back / clear"}, {"+  _", "screen mode"}, {"?", "this help"}, {"q", "quit"}}},
 	{"Containers", [][2]string{{"s", "start / stop"}, {"r", "restart"}, {"p", "pause / unpause"}, {"d", "remove"}, {"K", "kill"}, {"E", "exec shell"}, {"a", "attach"}, {"w", "open in browser"}, {"m", "raw logs (ctrl+c returns)"}, {"e", "hide / show stopped"}, {"o", "sort: name · cpu · mem"}, {"/", "filter list"}}},
 	{"Detail", [][2]string{{"[  ]", "previous / next tab"}, {"t  T", "chart window 1m · 5m · 15m · 1h"}, {"/", "search logs (regex)"}, {"f", "follow logs"}, {"z", "wrap logs"}, {"i", "log timestamps"}, {"v", "reveal masked env secrets"}, {"↑↓ pgup pgdn", "scroll"}}},
 	{"Resources", [][2]string{{"d", "remove selected"}, {"P", "prune unused"}, {"J", "raw JSON inspect"}}},

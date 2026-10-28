@@ -13,6 +13,7 @@ A live Docker dashboard for the terminal. Everything you reach for `docker ps`, 
 - **Images, volumes, networks, events** — browse, inspect (including raw JSON), remove and prune.
 - **Environment** — env vars per container, with passwords, tokens and keys masked until you ask.
 - **Doctor** — run a project's own health checks (`.berth/doctor.yaml`) and apply their fixes.
+- **Environments**: every Docker host you work with, probed live on one screen. Switch the whole of berth to any of them with one key.
 - **Command palette, custom commands, full mouse support.**
 
 ## Install
@@ -68,6 +69,7 @@ Press `?` inside berth for the full list.
 |---|---|
 | `1`–`5` | containers · images · volumes · networks · events |
 | `6` | doctor |
+| `0` | environments: every Docker host, switch between them |
 | `ctrl+p` or `:` | command palette |
 | `s` `r` `p` `d` `K` | start/stop · restart · pause · remove · kill |
 | `E` / `a` | exec a shell / attach |
@@ -85,6 +87,27 @@ Press `?` inside berth for the full list.
 ## Configuration
 
 Custom commands live in `~/.config/berth/config.yaml` (`%AppData%\berth\config.yaml` on Windows) and are re-read each time you open the menu.
+
+## Environments
+
+Press `0` to see every Docker host berth can manage, side by side and probed live: online or not, engine and OS, CPU and memory, running / unhealthy / stopped containers, compose projects and round-trip time. Press `enter` on one and the whole of berth switches to it, including stats, logs, shells, compose and doctor, with no restart.
+
+Environments come from three places:
+
+- **This machine**: the local engine (or the one `--host` points at).
+- **Saved hosts**: add with `a` inside berth, or list them in the config file:
+
+  ```yaml
+  hosts:
+    - name: QA server
+      url: ssh://deploy@qa.internal
+    - name: Build box
+      url: tcp://10.0.4.12:2375
+  ```
+
+- **Docker contexts**: anything in `docker context ls` appears automatically.
+
+For `ssh://` hosts, `ssh user@host docker ps` must work from your machine without a password (key auth), and the remote user needs access to Docker. berth connects through `docker system dial-stdio`, so nothing has to be installed or exposed on the remote side.
 
 ## Doctor
 
