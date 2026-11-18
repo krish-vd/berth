@@ -119,15 +119,9 @@ func (m Model) paletteKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.palette = nil
 		return m, it.run(&m)
 	}
-	// when the box is empty, a bare key runs its action directly (lazydocker muscle memory)
-	if p.input.Value() == "" && len(k.Runes) == 1 {
-		for _, it := range p.items {
-			if it.key == string(k.Runes) {
-				m.palette = nil
-				return m, it.run(&m)
-			}
-		}
-	}
+	// Typed keys always go to the search box. Shortcut letters only run actions
+	// from the main screen; here they would fire on the first letter of a
+	// search (s = stop, r = restart, d = remove…).
 	var cmd tea.Cmd
 	p.input, cmd = p.input.Update(k)
 	p.refilter()
@@ -453,7 +447,7 @@ func (m Model) viewHelp() string {
 	for i := 0; i < n; i++ {
 		lines = append(lines, fit(at(left, i), colW)+"  "+fit(at(right, i), colW))
 	}
-	lines = append(lines, sMuted.Render("berth — press ? or esc to close"))
+	lines = append(lines, sMuted.Render("berth · engineered by ")+fg(cAccent2).Render(Author)+sMuted.Render(" — press ? or esc to close"))
 	return modal("Keyboard shortcuts", lines, w, cAccent)
 }
 

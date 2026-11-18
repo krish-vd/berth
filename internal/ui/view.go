@@ -15,6 +15,15 @@ import (
 
 const headerHeight = 4
 
+// Author is credited on the opening card, the header corner, help and --version.
+const Author = "Krish Desai"
+
+// splashMin keeps the opening card up long enough to be read, even when
+// Docker answers instantly.
+const splashMin = 1500 * time.Millisecond
+
+func (m Model) holdingSplash() bool { return time.Since(m.born) < splashMin }
+
 func (m Model) bodyHeight() int { return m.h - headerHeight - 1 }
 
 func (m Model) listWidth() int {
@@ -32,7 +41,7 @@ func (m Model) View() string {
 	if m.w < 70 || m.h < 18 {
 		return sMuted.Render("berth needs at least 70×18 — enlarge the window")
 	}
-	if !m.gotSnap {
+	if !m.gotSnap || m.holdingSplash() {
 		return m.splash()
 	}
 	bh := m.bodyHeight()
@@ -104,7 +113,12 @@ func (m Model) splash() string {
 			"\n\n" + sMuted.Render(err.Error()) + "\n\n" + sMuted.Render("retrying every second · q to quit")
 	}
 	logo := fg(cAccent).Bold(true).Render("◆ berth")
-	return lipgloss.Place(m.w, m.h, lipgloss.Center, lipgloss.Center, logo+"\n\n"+msg)
+	byline := sSubtle.Render("─── ") + sMuted.Italic(true).Render("engineered by ") + fg(cAccent2).Bold(true).Render(Author) + sSubtle.Render(" ───")
+	if m.gotSnap { // connected, just holding the opening card
+		msg = fg(cGreen).Render("●") + "  " + sText.Render("connected to ") + sBold.Render(m.cli.Host)
+	}
+	card := lipgloss.JoinVertical(lipgloss.Center, logo, "", byline, "", "", msg)
+	return lipgloss.Place(m.w, m.h, lipgloss.Center, lipgloss.Center, card)
 }
 
 // ---------------------------------------------------------------- primitives
@@ -289,7 +303,14 @@ func (m Model) viewHeader() string {
 			tabs += " " + sSubtle.Render(k) + " " + sMuted.Render(n) + " "
 		}
 	}
-	return panel(logo+"  "+tabs, sMuted.Render("container observatory"), []string{l1, l2}, m.w, headerHeight, false)
+	// signature in the top-right corner: drop the tagline before the name on narrow terminals
+	title := logo + "  " + tabs
+	name := sMuted.Italic(true).Render("by ") + fg(cAccent2).Render(Author)
+	sig := sMuted.Render("container observatory") + sSubtle.Render(" · ") + name
+	if room := m.w - 2 - lipgloss.Width(title) - 6; lipgloss.Width(sig) > room {
+		sig = name
+	}
+	return panel(title, sig, []string{l1, l2}, m.w, headerHeight, false)
 }
 
 // ---------------------------------------------------------------- footer

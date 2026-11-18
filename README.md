@@ -1,5 +1,7 @@
 # berth
 
+*Engineered by **Krish Desai**.*
+
 A live Docker dashboard for the terminal. Everything you reach for `docker ps`, `docker logs` and `docker stats` to do, in one screen that updates as it happens — with history charts, alerts and the actions to fix what it shows you.
 
 ## What it does

@@ -37,7 +37,7 @@ func main() {
 	}
 
 	if *showVersion {
-		fmt.Println("berth", version)
+		fmt.Println("berth", version, "— engineered by", ui.Author)
 		return
 	}
 

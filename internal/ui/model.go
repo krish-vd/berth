@@ -198,6 +198,7 @@ type Model struct {
 	doc   docState  // project health checks (Doctor view)
 	hosts hostState // Docker environments (Hosts view)
 
+	born    time.Time    // when berth started (opening card timing)
 	ticking bool         // a frame tick is scheduled
 	cache   *renderCache // shared across value copies; written during View
 }
@@ -214,7 +215,7 @@ func New(cli *docker.Client, smp *metrics.Sampler) Model {
 		insp: map[string]*docker.Inspect{}, layers: map[string][]docker.Layer{},
 		timeline: map[string][]span{}, crashes: map[string][]time.Time{}, stopReq: map[string]time.Time{},
 		filter: fi, logs: newLogState(),
-		ticking: true, cache: &renderCache{}, hoverX: -1, hoverY: -1,
+		ticking: true, cache: &renderCache{}, hoverX: -1, hoverY: -1, born: time.Now(),
 	}
 }
 
@@ -390,7 +391,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // spinners spin, ~6fps for slow pulses, 0 (no frames) when nothing moves.
 func (m *Model) frameDelay() time.Duration {
 	fast := time.Second / fps
-	if !m.gotSnap || len(m.pending) > 0 || (m.tab == TLogs && m.logs.id == "" && m.view == VContainers) ||
+	if !m.gotSnap || m.holdingSplash() || len(m.pending) > 0 || (m.tab == TLogs && m.logs.id == "" && m.view == VContainers) ||
 		(m.view == VVolumes && m.dfBusy) || (m.view == VDoctor && m.doc.running) || (m.view == VHosts && m.hosts.pending > 0) || !m.hostCPU.Settled() || !m.hostMem.Settled() {
 		return fast
 	}
